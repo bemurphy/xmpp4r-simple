@@ -464,18 +464,37 @@ module Jabber
             if subscribed_to?(message[:to])
               deliver(message[:to], message[:message], message[:type])
             else
-              queue(:pending_messages) << message
+              queue(:pending_messages, true) << message
             end
           end
+          # Block here, otherwise it will consume CPU as long as a message
+          # exists for a user that hasn't authorized yet
+          sleep 1 
         }
       }
     end
 
-    def queue(queue)
+    def queue(queue, prune = false)
       @queues ||= Hash.new { |h,k| h[k] = Queue.new }
+      # Pending messages to unauthed useres would be a likely source of memory starvation, so
+      # prune them
+      prune_queue(queue) if prune
       @queues[queue]
     end
-
+    
+    # Prune a queue down to a max number of elements.  This is used to prevent
+    # pending messages to non-existant/non-authed users from starving memory.
+    # I'm not actually sure a good way to do this, in a large system this could
+    # be an unreliable way of approaching it as it's prone to abuse.   If non-throttled
+    # end users submit to bogus jids, this would cause older legit messages to not-yet-authed
+    # users to disappear.  The flipside is, too many pending_messages would bog the system down.
+    def prune_queue(queue, non_blocking = true, max_items = 1000)
+      queue_length = @queues[queue].length
+      if queue_length > max_items
+        (queue_length - max_items).times { @queues[queue].pop(non_blocking) rescue nil }
+      end
+    end
+    
     def dequeue(queue, non_blocking = true, max_items = 100, &block)
       queue_items = []
       max_items.times do
